@@ -1,7 +1,7 @@
 """
 Gourmet-OS v4
 ━━━━━━━━━━━━━
-결정 모드(냉장고 매칭) + 조리 모드(단계별 넘기기) 중심 재설계
+결정 모드(냉장고 매칭) + AI 요리도우미 중심 재설계
 """
 
 import re
@@ -97,12 +97,15 @@ button[data-testid="stSidebarCollapsedControl"]{display:none!important}
 .d-list li{font-size:.82rem;color:var(--text2);padding:.08rem 0}
 .d-list li::before{content:"· ";color:var(--text3)}
 
-/* 조리 모드 */
-.cook-step-num{font-size:.85rem;font-weight:500;color:var(--text3);margin-bottom:.3rem}
-.cook-step-text{font-size:1.3rem;font-weight:400;color:var(--text1);line-height:1.8;
-    padding:1.2rem;background:var(--surface);border-radius:10px;border:1px solid var(--border);
-    min-height:180px;display:flex;align-items:center}
-.cook-menu-name{font-size:.78rem;color:var(--text3);text-align:center;margin-bottom:.5rem}
+/* 카드 내 아이콘 버튼 */
+.mc + div button {
+    background: transparent !important; border: 1px solid var(--border) !important;
+    border-radius: 8px !important; width: 36px !important; min-width: 36px !important;
+    height: 32px !important; padding: 0 !important; margin: -0.6rem 0 0.5rem auto !important;
+    display: block !important; font-size: .9rem !important;
+    transition: border-color .12s !important;
+}
+.mc + div button:hover { border-color: var(--accent) !important; }
 
 /* 설정 */
 div[data-testid="stExpander"] details{border:1px solid var(--border)!important;border-radius:8px!important}
@@ -302,74 +305,7 @@ def split_steps(text: str) -> list[str]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 6. 조리 모드 (@st.dialog — 큰 글씨, 단계별 넘기기)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-@st.dialog("🍳 조리 모드", width="large")
-def cooking_mode(menu_name: str, df_full: pd.DataFrame):
-    row = df_full[df_full["메뉴명"] == menu_name].iloc[0]
-    steps = split_steps(str(row.get("조리법 (통합)", "")))
-
-    if not steps:
-        st.info("조리법 데이터가 비어 있습니다.")
-        return
-
-    total = len(steps)
-
-    # 단계 상태
-    key = f"cook_step_{menu_name}"
-    if key not in st.session_state:
-        st.session_state[key] = 0
-    idx = st.session_state[key]
-
-    # 메뉴명
-    st.markdown(f'<div class="cook-menu-name">{menu_name}</div>', unsafe_allow_html=True)
-
-    # 단계 번호
-    st.markdown(
-        f'<div class="cook-step-num">단계 {idx + 1} / {total}</div>',
-        unsafe_allow_html=True,
-    )
-
-    # 단계 내용 (큰 글씨)
-    st.markdown(
-        f'<div class="cook-step-text">{steps[idx]}</div>',
-        unsafe_allow_html=True,
-    )
-
-    # 재료 참고
-    with st.expander("🥄 재료 확인", expanded=False):
-        core = str(row.get("핵심 식재료", ""))
-        sub = str(row.get("부재료/소스", ""))
-        if core and core != "nan":
-            st.caption(f"**핵심:** {core}")
-        if sub and sub != "nan":
-            st.caption(f"**부재료:** {sub}")
-
-    # 네비게이션
-    st.markdown("")  # spacer
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c1:
-        if st.button("◀ 이전", disabled=(idx == 0), use_container_width=True):
-            st.session_state[key] = idx - 1
-            st.rerun()
-    with c2:
-        # 프로그레스
-        st.progress((idx + 1) / total)
-    with c3:
-        if idx < total - 1:
-            if st.button("다음 ▶", use_container_width=True):
-                st.session_state[key] = idx + 1
-                st.rerun()
-        else:
-            if st.button("✅ 완료", use_container_width=True):
-                st.session_state[key] = 0
-                st.rerun()
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 7. 레시피 상세 모달
+# 6. 레시피 상세 모달
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
@@ -395,11 +331,29 @@ def show_detail(menu_name: str, df_full: pd.DataFrame):
     if tags:
         st.markdown(f'<div class="d-tags">{"".join(tags)}</div>', unsafe_allow_html=True)
 
-    # 조리 모드 진입 버튼
-    if st.button("🍳 조리 모드로 보기", use_container_width=True, type="primary"):
-        cooking_mode(menu_name, df_full)
+    # ── AI 요리도우미 (맨 위, 전체 단계 한 번에) ──
+    steps = split_steps(str(row.get("조리법 (통합)", "")))
+    if steps:
+        with st.expander("🤖 AI 요리도우미 — 과학 기반 조리 가이드", expanded=False):
+            key, _ = _get_llm_key()
+            if not key:
+                st.caption("⚙️ 하단 AI 설정에서 API 키를 입력하면 활성화됩니다.")
+            else:
+                cache_key = f"ai_result_{menu_name}"
+                if cache_key in st.session_state:
+                    st.markdown(st.session_state[cache_key])
+                else:
+                    if st.button("🔬 전체 단계 분석 실행", key=f"ai_all_{menu_name}",
+                                 use_container_width=True):
+                        all_steps_text = "\n".join(
+                            f"[{i+1}단계] {s}" for i, s in enumerate(steps)
+                        )
+                        with st.spinner("전체 단계 분석 중…"):
+                            result = get_analysis(all_steps_text, menu_name)
+                        st.session_state[cache_key] = result
+                        st.markdown(result)
 
-    # 식재료
+    # ── 식재료 ──
     st.markdown('<div class="d-div"></div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
@@ -415,25 +369,12 @@ def show_detail(menu_name: str, df_full: pd.DataFrame):
             st.markdown(f'<div class="d-sec">부재료 / 소스</div><ul class="d-list">{items}</ul>',
                         unsafe_allow_html=True)
 
-    # 조리법 전문
+    # ── 조리법 전문 ──
     st.markdown('<div class="d-div"></div>', unsafe_allow_html=True)
     st.markdown('<div class="d-sec">조리법</div>', unsafe_allow_html=True)
-    steps = split_steps(str(row.get("조리법 (통합)", "")))
     if steps:
         for i, step in enumerate(steps, 1):
             st.markdown(f"**{i}.** {step}")
-        # AI 분석 (축소 — 하단에 조용히 배치)
-        with st.expander("🔬 AI 과학 분석 (선택)", expanded=False):
-            step_choice = st.selectbox(
-                "분석할 단계 선택",
-                [f"{i+1}단계: {s[:30]}…" for i, s in enumerate(steps)],
-                key=f"ai_step_{menu_name}",
-            )
-            if st.button("분석 실행", key=f"ai_run_{menu_name}"):
-                step_idx = int(step_choice.split("단계")[0]) - 1
-                with st.spinner("분석 중…"):
-                    result = get_analysis(steps[step_idx], menu_name)
-                st.markdown(result)
     else:
         st.info("조리법 데이터가 비어 있습니다.")
 
@@ -551,14 +492,8 @@ def render_cards(filtered: pd.DataFrame, df_full: pd.DataFrame, fridge: list[str
             f'</div>',
             unsafe_allow_html=True)
 
-        # 버튼 2개: 레시피 보기 + 바로 조리
-        b1, b2 = st.columns(2)
-        with b1:
-            if st.button("📋 레시피", key=f"det_{idx}", use_container_width=True):
-                show_detail(name, df_full)
-        with b2:
-            if st.button("🍳 조리 시작", key=f"cook_{idx}", use_container_width=True):
-                cooking_mode(name, df_full)
+        if st.button("📋", key=f"det_{idx}", help="레시피 보기"):
+            show_detail(name, df_full)
 
 
 def render_settings():
