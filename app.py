@@ -67,10 +67,10 @@ button[data-testid="stSidebarCollapsedControl"]{display:none!important}
 .chip-cat{background:var(--t-cat-bg);color:var(--t-cat)}
 .chip-hp{background:var(--t-hp-bg);color:var(--t-hp)}
 
-/* 카드 */
-.mc{background:var(--surface);border:1px solid var(--border);border-radius:10px;
-    padding:.85rem 1rem;margin-bottom:.5rem;transition:border-color .12s}
-.mc:active{border-color:var(--accent)}
+/* 카드 (클릭 가능) */
+.mc-wrapper{background:var(--surface);border:1px solid var(--border);border-radius:10px 10px 0 0;
+    padding:.85rem 1rem .6rem;margin-bottom:0;
+    -webkit-tap-highlight-color:transparent;pointer-events:none}
 .mc-name{font-size:.95rem;font-weight:600;color:var(--text1);margin-bottom:.35rem;line-height:1.35}
 .mc-tags{display:flex;flex-wrap:wrap;gap:.3rem;margin-bottom:.3rem}
 .tag{display:inline-block;font-size:.67rem;padding:.1rem .48rem;border-radius:20px;white-space:nowrap}
@@ -80,6 +80,21 @@ button[data-testid="stSidebarCollapsedControl"]{display:none!important}
 .tag-sat{background:var(--t-sat-bg);color:var(--t-sat)}
 .tag-match{background:var(--t-match-bg);color:var(--t-match);font-weight:500}
 .mc-ing{font-size:.74rem;color:var(--text3);line-height:1.5}
+
+/* 카드 아래 투명 버튼 (카드와 합체) */
+.mc-wrapper + div{margin-top:-1px!important}
+.mc-wrapper + div button{
+    background:var(--surface)!important;
+    border:1px solid var(--border)!important;border-top:none!important;
+    border-radius:0 0 10px 10px!important;
+    height:26px!important;
+    font-size:0!important;color:transparent!important;
+    margin-bottom:.55rem!important;
+    transition:background .12s!important;
+    -webkit-tap-highlight-color:transparent!important;
+}
+.mc-wrapper + div button:hover,
+.mc-wrapper + div button:active{background:#f5f4f0!important}
 
 /* 카운트 */
 .cnt{font-size:.8rem;color:var(--text2);margin-bottom:.5rem}
@@ -96,16 +111,6 @@ button[data-testid="stSidebarCollapsedControl"]{display:none!important}
 .d-list{list-style:none;padding:0;margin:0}
 .d-list li{font-size:.82rem;color:var(--text2);padding:.08rem 0}
 .d-list li::before{content:"· ";color:var(--text3)}
-
-/* 카드 내 아이콘 버튼 */
-.mc + div button {
-    background: transparent !important; border: 1px solid var(--border) !important;
-    border-radius: 8px !important; width: 36px !important; min-width: 36px !important;
-    height: 32px !important; padding: 0 !important; margin: -0.6rem 0 0.5rem auto !important;
-    display: block !important; font-size: .9rem !important;
-    transition: border-color .12s !important;
-}
-.mc + div button:hover { border-color: var(--accent) !important; }
 
 /* 설정 */
 div[data-testid="stExpander"] details{border:1px solid var(--border)!important;border-radius:8px!important}
@@ -406,7 +411,8 @@ def render_sub_filters(df: pd.DataFrame) -> dict:
         with c1:
             valid = df["_분"][df["_분"] < 9999]
             mx = int(valid.max()) if len(valid) else 120
-            max_min = st.slider("최대 시간(분)", 0, max(mx, 120), max(mx, 120), step=5)
+            max_min = st.slider("최대 시간", 0, max(mx, 120), max(mx, 120), step=5,
+                                format="%d분")
         with c2:
             sort_by = st.selectbox("정렬", ["기본", "빠른 순", "만족도 순"])
 
@@ -459,7 +465,6 @@ def render_cards(filtered: pd.DataFrame, df_full: pd.DataFrame, fridge: list[str
 
         # 태그
         tags = ""
-        # 매칭 재료 수 표시
         if fridge:
             n = count_matches(str(row.get("_핵심재료_정규", "")), fridge)
             if n:
@@ -484,15 +489,15 @@ def render_cards(filtered: pd.DataFrame, df_full: pd.DataFrame, fridge: list[str
         if ing and ing != "nan":
             ing_disp = ing[:55] + ("…" if len(ing) > 55 else "")
 
-        st.markdown(
-            f'<div class="mc">'
+        # 카드 전체를 클릭 가능한 컨테이너로 렌더링
+        card_html = (
             f'<div class="mc-name">{name}</div>'
             f'<div class="mc-tags">{tags}</div>'
             f'<div class="mc-ing">{ing_disp}</div>'
-            f'</div>',
-            unsafe_allow_html=True)
-
-        if st.button("📋", key=f"det_{idx}", help="레시피 보기"):
+        )
+        st.markdown(f'<div class="mc-wrapper" id="card-{idx}">{card_html}</div>',
+                    unsafe_allow_html=True)
+        if st.button(name, key=f"det_{idx}", use_container_width=True):
             show_detail(name, df_full)
 
 
