@@ -1,7 +1,7 @@
 """
-Gourmet-OS v3 · Mobile-First
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-모바일 최적화 · @st.dialog 상세 · AND 다중필터 · LLM 지연로딩
+Gourmet-OS v4
+━━━━━━━━━━━━━
+결정 모드(냉장고 매칭) + 조리 모드(단계별 넘기기) 중심 재설계
 """
 
 import re
@@ -14,153 +14,104 @@ import streamlit as st
 # 0. 설정
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# 우선순위: st.secrets > 하드코딩 > 런타임 입력
-def _get_csv_url() -> str:
+
+def _secret(key: str, fallback: str = "") -> str:
     try:
-        return st.secrets["SHEET_CSV_URL"]
+        return st.secrets[key]
     except Exception:
-        return ""
+        return fallback
 
-# ★ 하드코딩하려면 여기에 URL을 넣으세요
-SHEET_CSV_URL: str = _get_csv_url() or ""
 
-def _get_llm_config() -> tuple[str, str]:
-    """API 키 우선순위: st.secrets > session_state(UI 입력) > 빈 값."""
-    try:
-        key = st.secrets.get("LLM_API_KEY", "")
-        provider = st.secrets.get("LLM_PROVIDER", "openai")
-        if key:
-            return key, provider
-    except Exception:
-        pass
-    return (
-        st.session_state.get("llm_api_key", ""),
-        st.session_state.get("llm_provider", "openai"),
-    )
-
+SHEET_CSV_URL: str = _secret("SHEET_CSV_URL", "")
 REQUIRED_COLUMNS = [
     "메뉴명", "만족도", "분류", "건강",
     "소요 시간", "핵심 식재료", "부재료/소스", "조리법 (통합)",
 ]
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 1. 모바일 퍼스트 CSS
+# 1. CSS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-MOBILE_CSS = """
+CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
-
 :root {
-    --bg: #f7f6f3;
-    --surface: #ffffff;
-    --border: #e5e2db;
-    --border-hover: #c5c2bb;
-    --text-primary: #1a1a1a;
-    --text-secondary: #666;
-    --text-muted: #999;
-    --accent: #2d2d2d;
-    --tag-time-bg: #f0efe9; --tag-time-fg: #555;
-    --tag-cat-bg: #e8f4e8; --tag-cat-fg: #2d6a2d;
-    --tag-health-bg: #e8eef8; --tag-health-fg: #2d4a8a;
-    --tag-sat-bg: #fff8e8; --tag-sat-fg: #8a6a2d;
+    --bg:#f7f6f3; --surface:#fff; --border:#e5e2db;
+    --text1:#1a1a1a; --text2:#666; --text3:#999;
+    --accent:#2d2d2d;
+    --t-time-bg:#f0efe9; --t-time:#555;
+    --t-cat-bg:#e8f4e8; --t-cat:#2d6a2d;
+    --t-hp-bg:#e8eef8; --t-hp:#2d4a8a;
+    --t-sat-bg:#fff8e8; --t-sat:#8a6a2d;
+    --t-match-bg:#e2f5e9; --t-match:#1a7a3a;
 }
+.stApp{font-family:'Noto Sans KR',sans-serif;background:var(--bg)}
+.block-container{max-width:640px!important;padding:1rem 1rem 4rem!important}
+section[data-testid="stSidebar"],
+button[data-testid="stSidebarCollapsedControl"]{display:none!important}
 
-.stApp { font-family: 'Noto Sans KR', sans-serif; background: var(--bg); }
+/* 헤더 */
+.hd{text-align:center;padding:.6rem 0 .4rem;border-bottom:2px solid var(--accent);margin-bottom:.8rem}
+.hd h1{font-size:1.25rem;font-weight:700;color:var(--text1);margin:0}
+.hd p{font-size:.72rem;color:var(--text3);margin:.1rem 0 0;font-weight:300}
 
-/* ── 메인 컨테이너 폭 제한 (모바일 가독성) ── */
-.block-container {
-    max-width: 640px !important;
-    padding: 1rem 1rem 4rem !important;
-}
+/* 냉장고 입력 */
+.fridge-label{font-size:.88rem;font-weight:600;color:var(--text1);margin-bottom:.3rem}
+.fridge-hint{font-size:.73rem;color:var(--text3);margin-top:.15rem}
 
-/* ── 헤더 ── */
-.app-header {
-    text-align: center;
-    padding: 0.8rem 0 0.5rem;
-    border-bottom: 2px solid var(--accent);
-    margin-bottom: 1rem;
-}
-.app-header h1 { font-size: 1.3rem; font-weight: 700; color: var(--text-primary); margin: 0; }
-.app-header p { font-size: 0.75rem; color: var(--text-muted); margin: 0.15rem 0 0; font-weight: 300; }
+/* 필터 칩 */
+.chips{display:flex;flex-wrap:wrap;gap:.3rem;margin:.4rem 0 .6rem}
+.chip{display:inline-block;font-size:.68rem;padding:.12rem .5rem;border-radius:20px;white-space:nowrap}
+.chip-ing{background:var(--t-match-bg);color:var(--t-match)}
+.chip-time{background:var(--t-time-bg);color:var(--t-time)}
+.chip-cat{background:var(--t-cat-bg);color:var(--t-cat)}
+.chip-hp{background:var(--t-hp-bg);color:var(--t-hp)}
 
-/* ── 결과 바 ── */
-.result-bar {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 0.4rem 0; margin-bottom: 0.5rem;
-}
-.result-count { font-size: 0.8rem; color: var(--text-secondary); }
-.sort-label { font-size: 0.75rem; color: var(--text-muted); }
+/* 카드 */
+.mc{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+    padding:.85rem 1rem;margin-bottom:.5rem;transition:border-color .12s}
+.mc:active{border-color:var(--accent)}
+.mc-name{font-size:.95rem;font-weight:600;color:var(--text1);margin-bottom:.35rem;line-height:1.35}
+.mc-tags{display:flex;flex-wrap:wrap;gap:.3rem;margin-bottom:.3rem}
+.tag{display:inline-block;font-size:.67rem;padding:.1rem .48rem;border-radius:20px;white-space:nowrap}
+.tag-time{background:var(--t-time-bg);color:var(--t-time)}
+.tag-cat{background:var(--t-cat-bg);color:var(--t-cat)}
+.tag-hp{background:var(--t-hp-bg);color:var(--t-hp)}
+.tag-sat{background:var(--t-sat-bg);color:var(--t-sat)}
+.tag-match{background:var(--t-match-bg);color:var(--t-match);font-weight:500}
+.mc-ing{font-size:.74rem;color:var(--text3);line-height:1.5}
 
-/* ── 메뉴 카드 ── */
-.m-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 0.9rem 1rem;
-    margin-bottom: 0.55rem;
-    transition: border-color 0.12s, box-shadow 0.12s;
-    -webkit-tap-highlight-color: transparent;
-}
-.m-card:active { border-color: var(--accent); box-shadow: 0 1px 8px rgba(0,0,0,0.06); }
-.m-card-title {
-    font-size: 0.95rem; font-weight: 600; color: var(--text-primary);
-    margin-bottom: 0.4rem; line-height: 1.35;
-}
-.m-card-tags { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.35rem; }
-.tag {
-    display: inline-block; font-size: 0.68rem; padding: 0.12rem 0.5rem;
-    border-radius: 20px; font-weight: 400; white-space: nowrap;
-}
-.tag-time { background: var(--tag-time-bg); color: var(--tag-time-fg); }
-.tag-cat { background: var(--tag-cat-bg); color: var(--tag-cat-fg); }
-.tag-health { background: var(--tag-health-bg); color: var(--tag-health-fg); }
-.tag-sat { background: var(--tag-sat-bg); color: var(--tag-sat-fg); }
-.m-card-ing { font-size: 0.75rem; color: var(--text-muted); line-height: 1.5; }
+/* 카운트 */
+.cnt{font-size:.8rem;color:var(--text2);margin-bottom:.5rem}
 
-/* ── 모달(dialog) 내부 스타일 ── */
-.d-meta { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.6rem 0; }
-.d-divider { height: 1px; background: var(--border); margin: 0.8rem 0; }
-.d-section-title { font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem; }
-.d-ing-list { list-style: none; padding: 0; margin: 0 0 0.2rem; }
-.d-ing-list li { font-size: 0.82rem; color: var(--text-secondary); padding: 0.1rem 0; }
-.d-ing-list li::before { content: "· "; color: var(--text-muted); }
-.step-box {
-    background: var(--bg); border-left: 3px solid var(--border);
-    padding: 0.65rem 0.8rem; margin: 0.45rem 0; border-radius: 0 6px 6px 0;
-    font-size: 0.88rem; line-height: 1.7; color: #333;
-}
-.step-num { font-weight: 700; color: var(--text-primary); margin-right: 0.3rem; }
+/* 빈 상태 */
+.empty{text-align:center;padding:2.5rem 1rem;color:var(--text3)}
+.empty .ico{font-size:2.2rem;margin-bottom:.4rem}
+.empty p{font-size:.88rem}
 
-/* ── 빈 상태 ── */
-.empty-state { text-align: center; padding: 2.5rem 1rem; color: var(--text-muted); }
-.empty-state .icon { font-size: 2.2rem; margin-bottom: 0.4rem; }
-.empty-state p { font-size: 0.88rem; }
+/* 모달 내부 */
+.d-tags{display:flex;flex-wrap:wrap;gap:.35rem;margin:.5rem 0}
+.d-div{height:1px;background:var(--border);margin:.7rem 0}
+.d-sec{font-size:.82rem;font-weight:600;color:var(--text2);margin-bottom:.3rem}
+.d-list{list-style:none;padding:0;margin:0}
+.d-list li{font-size:.82rem;color:var(--text2);padding:.08rem 0}
+.d-list li::before{content:"· ";color:var(--text3)}
 
-/* ── Streamlit 위젯 오버라이드 ── */
-div[data-testid="stExpander"] details { border: 1px solid var(--border) !important; border-radius: 8px !important; }
-div[data-testid="stExpander"] summary { font-size: 0.82rem !important; }
-button[kind="secondary"] { font-size: 0.82rem !important; }
+/* 조리 모드 */
+.cook-step-num{font-size:.85rem;font-weight:500;color:var(--text3);margin-bottom:.3rem}
+.cook-step-text{font-size:1.3rem;font-weight:400;color:var(--text1);line-height:1.8;
+    padding:1.2rem;background:var(--surface);border-radius:10px;border:1px solid var(--border);
+    min-height:180px;display:flex;align-items:center}
+.cook-menu-name{font-size:.78rem;color:var(--text3);text-align:center;margin-bottom:.5rem}
 
-/* ── 필터 영역 칩 스타일 ── */
-.filter-summary {
-    font-size: 0.75rem; color: var(--text-muted);
-    padding: 0.3rem 0; line-height: 1.6;
-}
-.filter-chip {
-    display: inline-block; background: var(--accent); color: #fff;
-    font-size: 0.68rem; padding: 0.1rem 0.5rem; border-radius: 12px; margin-right: 0.3rem;
-}
-
-/* ── 사이드바 완전 숨김 ── */
-section[data-testid="stSidebar"] { display: none !important; }
-button[data-testid="stSidebarCollapsedControl"] { display: none !important; }
+/* 설정 */
+div[data-testid="stExpander"] details{border:1px solid var(--border)!important;border-radius:8px!important}
 </style>
 """
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 2. 데이터 로드 (TTL 캐시)
+# 2. 데이터 로드
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
@@ -172,12 +123,14 @@ def load_data(csv_url: str) -> pd.DataFrame:
     if missing:
         st.error(f"CSV에 다음 컬럼이 없습니다: {missing}")
         st.stop()
-    df["_분"] = df["소요 시간"].apply(_parse_minutes)
+    df["_분"] = df["소요 시간"].apply(_parse_min)
     df["_만족도"] = pd.to_numeric(df["만족도"], errors="coerce").fillna(0)
+    # 식재료 정규화 컬럼 (검색용): 괄호/브랜드 제거
+    df["_핵심재료_정규"] = df["핵심 식재료"].fillna("").apply(_normalize_ingredients)
     return df
 
 
-def _parse_minutes(raw) -> int:
+def _parse_min(raw) -> int:
     if pd.isna(raw):
         return 9999
     s = str(raw).strip()
@@ -191,8 +144,31 @@ def _parse_minutes(raw) -> int:
     return t
 
 
+def _normalize_ingredient(name: str) -> str:
+    """
+    '버섯 (밀프랩)' → '버섯'
+    '닭가슴살(냉동)' → '닭가슴살'
+    괄호 안 내용 제거 후 기본 재료명만 추출.
+    """
+    return re.sub(r"\s*[\(\（][^)）]*[\)\）]", "", name).strip()
+
+
+def _normalize_ingredients(raw: str) -> str:
+    """쉼표로 분리된 재료 문자열 전체를 정규화."""
+    parts = [_normalize_ingredient(p.strip()) for p in raw.split(",") if p.strip()]
+    return ",".join(parts)
+
+
+def _unique_ingredients(df: pd.DataFrame) -> list[str]:
+    """정규화된 재료 고유 목록."""
+    return sorted({
+        v.strip()
+        for raw in df["_핵심재료_정규"].dropna()
+        for v in raw.split(",") if v.strip()
+    })
+
+
 def _unique_values(series: pd.Series, sep: str = ",") -> list[str]:
-    """시리즈에서 sep으로 분리 후 고유값 정렬 리스트."""
     return sorted({
         v.strip() for raw in series.dropna()
         for v in str(raw).split(sep) if v.strip()
@@ -200,28 +176,38 @@ def _unique_values(series: pd.Series, sep: str = ",") -> list[str]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 3. 필터링 엔진 (독립 AND 조건)
+# 3. 필터링 엔진
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 def apply_filters(
     df: pd.DataFrame,
+    fridge: list[str],
     max_minutes: int | None,
-    ingredient: str,
-    health_goal: str,
     categories: list[str],
+    health_goal: str,
     sort_by: str,
 ) -> pd.DataFrame:
-    """모든 필터를 AND로 결합하여 적용 후 정렬."""
+    """모든 필터 AND 결합. fridge는 OR(재료 중 하나라도 매칭)."""
     out = df.copy()
+
+    # ★ 냉장고 매칭: 정규화된 컬럼에서 contains 검색 (OR)
+    if fridge:
+        mask = pd.Series(False, index=out.index)
+        for ing in fridge:
+            ing = ing.strip()
+            if ing:
+                mask = mask | out["_핵심재료_정규"].str.contains(
+                    ing, case=False, regex=False
+                )
+        out = out[mask]
 
     if max_minutes is not None:
         out = out[out["_분"] <= max_minutes]
 
-    if ingredient:
-        # ★ 핵심 식재료 컬럼에서만 검색 (부재료 배제)
-        out = out[out["핵심 식재료"].fillna("").str.contains(
-            ingredient.strip(), case=False, regex=False
+    if categories:
+        out = out[out["분류"].fillna("").apply(
+            lambda x: any(c in str(x) for c in categories)
         )]
 
     if health_goal:
@@ -229,98 +215,71 @@ def apply_filters(
             health_goal.strip(), case=False, regex=False
         )]
 
-    if categories:
-        out = out[out["분류"].fillna("").apply(
-            lambda x: any(c in str(x) for c in categories)
-        )]
-
-    # 정렬
     if sort_by == "빠른 순":
-        out = out.sort_values("_분", ascending=True)
+        out = out.sort_values("_분")
     elif sort_by == "만족도 순":
         out = out.sort_values("_만족도", ascending=False)
 
     return out
 
 
+def count_matches(row_normalized: str, fridge: list[str]) -> int:
+    """매칭된 재료 개수."""
+    return sum(1 for ing in fridge if ing and ing.lower() in row_normalized.lower())
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 4. AI 가이드 (캐싱 + 지연 로딩)
+# 4. AI 가이드 (nice-to-have, 축소)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-GOURMET_SYSTEM_PROMPT = textwrap.dedent("""\
-    당신은 **Gourmet-OS 분석 엔진**입니다.
-    역할: 가정식 조리 과정의 각 단계를 물리·화학·생리학적 관점에서 해설하는 전문 분석관.
-
-    ── 페르소나 규칙 ──
-    1. 톤: 객관적, 분석적, 과학적. 감탄사·이모지·수사적 표현 금지.
-    2. 깊이: 단순 지시가 아니라 **왜 그래야 하는지**
-       물리/화학/생리학적 이유를 반드시 포함.
-       - 열전달: 마이야르 반응(140-165 °C), 캐러멜화(160 °C+),
-         전분 호화(60-80 °C) 등.
-       - 식감: 콜라겐→젤라틴 전환(75 °C↑), 글루텐 네트워크 등.
-       - 영양: 지용성 비타민 흡수, 비타민C 열분해 최소화 등.
-       - 풍미: 알리신 생성, 캡사이신 지용성, 글루탐산 시너지 등.
-    3. 분량: 단계당 3-5문장. 핵심 수치(온도, 시간, pH) 1개 이상 포함.
-    4. 안전: 고온·날것·알레르기 해당 시 간결히 명시.
-    5. 언어: 한국어(과학 용어 영문 병기).
-
-    ── 응답 형식 ──
-    [단계 N 분석]
-    • 핵심 원리: (1-2문장)
-    • 최적 조건: 온도·시간·비율 등
-    • 실패 시나리오: 조건 이탈 시 결과
-    • 팁: 가정 환경 대안 (선택)
+SYSTEM_PROMPT = textwrap.dedent("""\
+    당신은 Gourmet-OS 분석 엔진입니다.
+    조리 단계를 물리·화학·생리학적 관점에서 해설하는 전문 분석관.
+    톤: 객관적, 과학적. 이모지 금지.
+    깊이: 왜 그래야 하는지 이유(마이야르 반응, 캐러멜화, 전분 호화 등)를
+    온도·시간 수치와 함께 3-5문장으로 설명.
+    언어: 한국어(과학 용어 영문 병기).
+    형식: [핵심 원리] → [최적 조건] → [실패 시나리오] → [팁]
 """)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def _cached_llm_call(recipe_step: str, menu_name: str, provider: str, api_key: str) -> str:
-    """LLM 호출 결과를 24시간 캐싱. 동일 (단계, 메뉴)엔 재호출 없음."""
-    user_msg = (
-        f"메뉴: {menu_name}\n"
-        f"아래 조리 단계를 Gourmet-OS 분석 엔진 페르소나로 해설하라.\n\n"
-        f"조리 단계:\n{recipe_step}"
-    )
+def _get_llm_key() -> tuple[str, str]:
+    key = _secret("LLM_API_KEY") or st.session_state.get("llm_api_key", "")
+    provider = _secret("LLM_PROVIDER", "openai") if _secret("LLM_API_KEY") \
+        else st.session_state.get("llm_provider", "openai")
+    return key, provider
 
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _llm_call(step: str, menu: str, provider: str, api_key: str) -> str:
+    msg = f"메뉴: {menu}\n조리 단계를 해설하라.\n\n{step}"
     if provider == "openai":
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=api_key)
-            resp = client.chat.completions.create(
+            r = OpenAI(api_key=api_key).chat.completions.create(
                 model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": GOURMET_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0.3, max_tokens=800,
-            )
-            return resp.choices[0].message.content
+                messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                          {"role": "user", "content": msg}],
+                temperature=0.3, max_tokens=600)
+            return r.choices[0].message.content
         except Exception as e:
-            return f"⚠️ OpenAI 호출 실패: {e}"
-
+            return f"⚠️ 호출 실패: {e}"
     if provider == "gemini":
         try:
             import google.generativeai as genai
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(
-                "gemini-1.5-flash", system_instruction=GOURMET_SYSTEM_PROMPT,
-            )
-            return model.generate_content(user_msg).text
+            m = genai.GenerativeModel("gemini-1.5-flash", system_instruction=SYSTEM_PROMPT)
+            return m.generate_content(msg).text
         except Exception as e:
-            return f"⚠️ Gemini 호출 실패: {e}"
-
+            return f"⚠️ 호출 실패: {e}"
     return ""
 
 
 def get_analysis(step: str, menu: str) -> str:
-    """지연 로딩 래퍼. API 키 없으면 안내 반환."""
-    api_key, provider = _get_llm_config()
-    if not api_key:
-        return (
-            "`LLM_API_KEY` 미설정 — 키를 넣으면 이 영역에 "
-            "물리·화학·생리학 기반 단계별 해설이 생성됩니다."
-        )
-    return _cached_llm_call(step, menu, provider, api_key)
+    key, provider = _get_llm_key()
+    if not key:
+        return "API 키 미설정 — ⚙️ 설정에서 키를 입력하면 활성화됩니다."
+    return _llm_call(step, menu, provider, key)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -343,16 +302,80 @@ def split_steps(text: str) -> list[str]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 6. UI — 상세 모달 (@st.dialog)
+# 6. 조리 모드 (@st.dialog — 큰 글씨, 단계별 넘기기)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-@st.dialog("📋 레시피 상세", width="large")
+@st.dialog("🍳 조리 모드", width="large")
+def cooking_mode(menu_name: str, df_full: pd.DataFrame):
+    row = df_full[df_full["메뉴명"] == menu_name].iloc[0]
+    steps = split_steps(str(row.get("조리법 (통합)", "")))
+
+    if not steps:
+        st.info("조리법 데이터가 비어 있습니다.")
+        return
+
+    total = len(steps)
+
+    # 단계 상태
+    key = f"cook_step_{menu_name}"
+    if key not in st.session_state:
+        st.session_state[key] = 0
+    idx = st.session_state[key]
+
+    # 메뉴명
+    st.markdown(f'<div class="cook-menu-name">{menu_name}</div>', unsafe_allow_html=True)
+
+    # 단계 번호
+    st.markdown(
+        f'<div class="cook-step-num">단계 {idx + 1} / {total}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # 단계 내용 (큰 글씨)
+    st.markdown(
+        f'<div class="cook-step-text">{steps[idx]}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # 재료 참고
+    with st.expander("🥄 재료 확인", expanded=False):
+        core = str(row.get("핵심 식재료", ""))
+        sub = str(row.get("부재료/소스", ""))
+        if core and core != "nan":
+            st.caption(f"**핵심:** {core}")
+        if sub and sub != "nan":
+            st.caption(f"**부재료:** {sub}")
+
+    # 네비게이션
+    st.markdown("")  # spacer
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c1:
+        if st.button("◀ 이전", disabled=(idx == 0), use_container_width=True):
+            st.session_state[key] = idx - 1
+            st.rerun()
+    with c2:
+        # 프로그레스
+        st.progress((idx + 1) / total)
+    with c3:
+        if idx < total - 1:
+            if st.button("다음 ▶", use_container_width=True):
+                st.session_state[key] = idx + 1
+                st.rerun()
+        else:
+            if st.button("✅ 완료", use_container_width=True):
+                st.session_state[key] = 0
+                st.rerun()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 7. 레시피 상세 모달
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@st.dialog("📋 레시피", width="large")
 def show_detail(menu_name: str, df_full: pd.DataFrame):
-    """
-    원본 df에서 메뉴를 조회 → 필터 상태와 무관하게 안정적으로 표시.
-    LLM 분석은 사용자가 expander를 열 때만 실행 (지연 로딩).
-    """
+    """레시피 상세 — 원본 df에서 조회하여 필터 변경에 안전."""
     match = df_full[df_full["메뉴명"] == menu_name]
     if match.empty:
         st.error("메뉴를 찾을 수 없습니다.")
@@ -360,319 +383,267 @@ def show_detail(menu_name: str, df_full: pd.DataFrame):
 
     row = match.iloc[0]
 
-    # ── 메타 태그 ──
+    # 태그
     tags = []
-    for val, cls in [
-        (row.get("소요 시간"), "tag-time"),
-        (row.get("분류"), "tag-cat"),
-        (row.get("건강"), "tag-health"),
-    ]:
-        v = str(val) if pd.notna(val) else ""
-        if v:
+    for val, cls in [("소요 시간", "tag-time"), ("분류", "tag-cat"), ("건강", "tag-hp")]:
+        v = str(row.get(val, ""))
+        if v and v != "nan":
             tags.append(f'<span class="tag {cls}">{v}</span>')
     sat = str(row.get("만족도", ""))
     if sat and sat != "nan":
-        tags.append(f'<span class="tag tag-sat">만족도 {sat}</span>')
+        tags.append(f'<span class="tag tag-sat">★ {sat}</span>')
+    if tags:
+        st.markdown(f'<div class="d-tags">{"".join(tags)}</div>', unsafe_allow_html=True)
 
-    st.markdown(f'<div class="d-meta">{"".join(tags)}</div>', unsafe_allow_html=True)
+    # 조리 모드 진입 버튼
+    if st.button("🍳 조리 모드로 보기", use_container_width=True, type="primary"):
+        cooking_mode(menu_name, df_full)
 
-    # ── 식재료 ──
-    st.markdown('<div class="d-divider"></div>', unsafe_allow_html=True)
+    # 식재료
+    st.markdown('<div class="d-div"></div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
         core = [i.strip() for i in str(row.get("핵심 식재료", "")).split(",") if i.strip()]
         if core:
             items = "".join(f"<li>{i}</li>" for i in core)
-            st.markdown(
-                f'<div class="d-section-title">핵심 식재료</div>'
-                f'<ul class="d-ing-list">{items}</ul>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(f'<div class="d-sec">핵심 식재료</div><ul class="d-list">{items}</ul>',
+                        unsafe_allow_html=True)
     with c2:
         sub = [i.strip() for i in str(row.get("부재료/소스", "")).split(",") if i.strip()]
         if sub:
             items = "".join(f"<li>{i}</li>" for i in sub)
-            st.markdown(
-                f'<div class="d-section-title">부재료 / 소스</div>'
-                f'<ul class="d-ing-list">{items}</ul>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(f'<div class="d-sec">부재료 / 소스</div><ul class="d-list">{items}</ul>',
+                        unsafe_allow_html=True)
 
-    # ── 조리법 ──
-    st.markdown('<div class="d-divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="d-section-title">조리법</div>', unsafe_allow_html=True)
-
+    # 조리법 전문
+    st.markdown('<div class="d-div"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="d-sec">조리법</div>', unsafe_allow_html=True)
     steps = split_steps(str(row.get("조리법 (통합)", "")))
-    if not steps:
-        st.info("조리법 데이터가 비어 있습니다.")
-        return
-
-    for i, step in enumerate(steps, 1):
-        st.markdown(
-            f'<div class="step-box"><span class="step-num">{i}</span>{step}</div>',
-            unsafe_allow_html=True,
-        )
-        # ★ 지연 로딩: expander 열 때만 LLM 호출
-        with st.expander("🔬 과학적 분석 보기", expanded=False):
-            if st.button(f"분석 실행", key=f"llm_{menu_name}_{i}"):
+    if steps:
+        for i, step in enumerate(steps, 1):
+            st.markdown(f"**{i}.** {step}")
+        # AI 분석 (축소 — 하단에 조용히 배치)
+        with st.expander("🔬 AI 과학 분석 (선택)", expanded=False):
+            step_choice = st.selectbox(
+                "분석할 단계 선택",
+                [f"{i+1}단계: {s[:30]}…" for i, s in enumerate(steps)],
+                key=f"ai_step_{menu_name}",
+            )
+            if st.button("분석 실행", key=f"ai_run_{menu_name}"):
+                step_idx = int(step_choice.split("단계")[0]) - 1
                 with st.spinner("분석 중…"):
-                    result = get_analysis(step, menu_name)
+                    result = get_analysis(steps[step_idx], menu_name)
                 st.markdown(result)
-            else:
-                st.caption("버튼을 누르면 AI가 이 단계를 과학적으로 분석합니다.")
+    else:
+        st.info("조리법 데이터가 비어 있습니다.")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 7. UI — 필터 바 (메인 상단)
+# 8. 메인 화면 UI
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def render_filters(df: pd.DataFrame) -> dict:
-    """메인 화면 상단 expander에 독립 필터 위젯 배치. dict 반환."""
-    with st.expander("🔍 필터 & 정렬", expanded=False):
+def render_fridge_input() -> list[str]:
+    """냉장고 재료 입력 — 앱의 핵심 입력."""
+    st.markdown('<div class="fridge-label">🧊 냉장고에 뭐 있어?</div>', unsafe_allow_html=True)
+    raw = st.text_input(
+        "재료 입력",
+        placeholder="예: 버섯, 닭가슴살, 양파",
+        label_visibility="collapsed",
+    )
+    st.markdown('<div class="fridge-hint">쉼표로 여러 재료 입력 · 입력 안 하면 전체 메뉴 표시</div>',
+                unsafe_allow_html=True)
+    if not raw.strip():
+        return []
+    return [i.strip() for i in raw.split(",") if i.strip()]
 
-        # Row 1: 시간 + 정렬
-        r1c1, r1c2 = st.columns([3, 2])
-        with r1c1:
+
+def render_sub_filters(df: pd.DataFrame) -> dict:
+    """보조 필터 (접힌 상태)."""
+    with st.expander("⚙️ 추가 필터 & 정렬", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
             valid = df["_분"][df["_분"] < 9999]
             mx = int(valid.max()) if len(valid) else 120
-            max_min = st.slider(
-                "최대 소요 시간(분)", 0, max(mx, 120), max(mx, 120), step=5,
-                help="0으로 놓으면 시간 필터 해제",
-            )
-        with r1c2:
+            max_min = st.slider("최대 시간(분)", 0, max(mx, 120), max(mx, 120), step=5)
+        with c2:
             sort_by = st.selectbox("정렬", ["기본", "빠른 순", "만족도 순"])
 
-        # Row 2: 재료 + 건강
-        r2c1, r2c2 = st.columns(2)
-        with r2c1:
-            all_ing = _unique_values(df["핵심 식재료"])
-            ingredient = st.selectbox(
-                "핵심 식재료",
-                [""] + all_ing,
-                format_func=lambda x: x or "전체",
-            )
-        with r2c2:
-            all_goals = _unique_values(df["건강"])
-            health = st.selectbox(
-                "건강 목적",
-                [""] + all_goals,
-                format_func=lambda x: x or "전체",
-            )
-
-        # Row 3: 분류
-        all_cats = _unique_values(df["분류"])
-        categories = st.multiselect("분류", all_cats)
-
-    # 활성 필터 요약 칩
-    chips = []
-    if max_min and max_min < max(mx, 120):
-        chips.append(f'<span class="filter-chip">⏱ {max_min}분 이내</span>')
-    if ingredient:
-        chips.append(f'<span class="filter-chip">🥩 {ingredient}</span>')
-    if health:
-        chips.append(f'<span class="filter-chip">💊 {health}</span>')
-    for c in categories:
-        chips.append(f'<span class="filter-chip">📂 {c}</span>')
-    if chips:
-        st.markdown(
-            f'<div class="filter-summary">{"".join(chips)}</div>',
-            unsafe_allow_html=True,
-        )
+        c3, c4 = st.columns(2)
+        with c3:
+            cats = st.multiselect("분류", _unique_values(df["분류"]))
+        with c4:
+            goals = _unique_values(df["건강"])
+            health = st.selectbox("건강", [""] + goals, format_func=lambda x: x or "전체")
 
     return {
         "max_minutes": max_min if max_min < max(mx, 120) else None,
-        "ingredient": ingredient,
+        "categories": cats,
         "health": health,
-        "categories": categories,
         "sort_by": sort_by,
     }
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 8. UI — 카드 리스트 (1열)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def render_active_chips(fridge: list[str], filters: dict):
+    """활성 필터를 칩으로 표시."""
+    chips = []
+    for ing in fridge:
+        chips.append(f'<span class="chip chip-ing">🥩 {ing}</span>')
+    if filters["max_minutes"]:
+        chips.append(f'<span class="chip chip-time">⏱ {filters["max_minutes"]}분</span>')
+    for c in filters["categories"]:
+        chips.append(f'<span class="chip chip-cat">📂 {c}</span>')
+    if filters["health"]:
+        chips.append(f'<span class="chip chip-hp">💊 {filters["health"]}</span>')
+    if chips:
+        st.markdown(f'<div class="chips">{"".join(chips)}</div>', unsafe_allow_html=True)
 
 
-def render_card_list(filtered: pd.DataFrame, df_full: pd.DataFrame) -> None:
-    """세로 1열 카드 리스트. 카드 클릭 → @st.dialog 모달."""
+def render_cards(filtered: pd.DataFrame, df_full: pd.DataFrame, fridge: list[str]):
+    """1열 카드 리스트."""
     total = len(filtered)
-
     if total == 0:
         st.markdown(
-            '<div class="empty-state">'
-            '<div class="icon">🍳</div>'
-            '<p>조건에 맞는 메뉴가 없습니다.<br>필터를 조정해 보세요.</p>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+            '<div class="empty"><div class="ico">🍳</div>'
+            '<p>조건에 맞는 메뉴가 없습니다.<br>필터를 조정해 보세요.</p></div>',
+            unsafe_allow_html=True)
         return
 
-    st.markdown(
-        f'<div class="result-bar">'
-        f'<span class="result-count">{total}개 메뉴</span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f'<div class="cnt">{total}개 메뉴</div>', unsafe_allow_html=True)
 
     rows = filtered.reset_index(drop=True)
     for idx in range(len(rows)):
         row = rows.iloc[idx]
         name = row["메뉴명"]
 
-        # 태그 HTML
-        tags = []
-        time_v = str(row.get("소요 시간", ""))
-        if time_v and time_v != "nan":
-            tags.append(f'<span class="tag tag-time">{time_v}</span>')
-        cat_v = str(row.get("분류", ""))
-        if cat_v and cat_v != "nan":
-            tags.append(f'<span class="tag tag-cat">{cat_v}</span>')
-        health_v = str(row.get("건강", ""))
-        if health_v and health_v != "nan":
-            short = health_v[:18] + ("…" if len(health_v) > 18 else "")
-            tags.append(f'<span class="tag tag-health">{short}</span>')
-        sat_v = str(row.get("만족도", ""))
-        if sat_v and sat_v != "nan":
-            tags.append(f'<span class="tag tag-sat">★ {sat_v}</span>')
+        # 태그
+        tags = ""
+        # 매칭 재료 수 표시
+        if fridge:
+            n = count_matches(str(row.get("_핵심재료_정규", "")), fridge)
+            if n:
+                tags += f'<span class="tag tag-match">{n}개 재료 매칭</span>'
+        tv = str(row.get("소요 시간", ""))
+        if tv and tv != "nan":
+            tags += f'<span class="tag tag-time">{tv}</span>'
+        cv = str(row.get("분류", ""))
+        if cv and cv != "nan":
+            tags += f'<span class="tag tag-cat">{cv}</span>'
+        hv = str(row.get("건강", ""))
+        if hv and hv != "nan":
+            short = hv[:18] + ("…" if len(hv) > 18 else "")
+            tags += f'<span class="tag tag-hp">{short}</span>'
+        sv = str(row.get("만족도", ""))
+        if sv and sv != "nan":
+            tags += f'<span class="tag tag-sat">★ {sv}</span>'
 
-        ing_v = str(row.get("핵심 식재료", ""))
-        ing_display = ""
-        if ing_v and ing_v != "nan":
-            ing_display = ing_v[:55] + ("…" if len(ing_v) > 55 else "")
+        # 재료 미리보기
+        ing = str(row.get("핵심 식재료", ""))
+        ing_disp = ""
+        if ing and ing != "nan":
+            ing_disp = ing[:55] + ("…" if len(ing) > 55 else "")
 
-        # 카드 HTML + 바로 아래 버튼
         st.markdown(
-            f'<div class="m-card">'
-            f'  <div class="m-card-title">{name}</div>'
-            f'  <div class="m-card-tags">{"".join(tags)}</div>'
-            f'  <div class="m-card-ing">{ing_display}</div>'
+            f'<div class="mc">'
+            f'<div class="mc-name">{name}</div>'
+            f'<div class="mc-tags">{tags}</div>'
+            f'<div class="mc-ing">{ing_disp}</div>'
             f'</div>',
-            unsafe_allow_html=True,
-        )
+            unsafe_allow_html=True)
 
-        if st.button(f"📋 레시피 보기", key=f"open_{idx}", use_container_width=True):
-            show_detail(name, df_full)
+        # 버튼 2개: 레시피 보기 + 바로 조리
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("📋 레시피", key=f"det_{idx}", use_container_width=True):
+                show_detail(name, df_full)
+        with b2:
+            if st.button("🍳 조리 시작", key=f"cook_{idx}", use_container_width=True):
+                cooking_mode(name, df_full)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 9. UI — 설정 (API 키 입력)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def render_settings():
+    """API 키 설정 (최하단, 축소)."""
+    key, provider = _get_llm_key()
+    status = "🟢" if key else "⚫"
 
-
-def _render_settings():
-    """API 키 입력 UI. secrets에 이미 있으면 '연결됨' 표시."""
-    key_from_secrets, provider_from_secrets = "", ""
-    try:
-        key_from_secrets = st.secrets.get("LLM_API_KEY", "")
-        provider_from_secrets = st.secrets.get("LLM_PROVIDER", "")
-    except Exception:
-        pass
-
-    has_secrets_key = bool(key_from_secrets)
-    current_key, current_provider = _get_llm_config()
-    is_connected = bool(current_key)
-
-    status = "🟢 연결됨" if is_connected else "⚫ 미연결"
-
-    with st.expander(f"⚙️ AI 분석 설정 — {status}", expanded=False):
-        if has_secrets_key:
-            st.success("✅ secrets에서 API 키가 로드되었습니다.")
-            st.caption(f"Provider: **{provider_from_secrets or 'openai'}** · 키: `{key_from_secrets[:8]}…`")
+    with st.expander(f"⚙️ AI 설정 {status}", expanded=False):
+        if _secret("LLM_API_KEY"):
+            st.success(f"secrets에서 로드됨 ({_secret('LLM_PROVIDER', 'openai')})")
         else:
-            st.caption("조리 단계별 과학적 분석을 사용하려면 API 키를 입력하세요.")
             c1, c2 = st.columns([2, 3])
             with c1:
-                provider = st.selectbox(
-                    "Provider",
-                    ["openai", "gemini"],
-                    index=0,
-                    key="settings_provider",
-                )
+                prov = st.selectbox("Provider", ["openai", "gemini"], key="s_prov")
             with c2:
-                api_key = st.text_input(
-                    "API Key",
-                    type="password",
-                    placeholder="sk-… 또는 AI…",
-                    key="settings_api_key",
-                )
-
-            # session_state에 저장
-            if api_key:
-                st.session_state["llm_api_key"] = api_key
-                st.session_state["llm_provider"] = provider
-                st.success(f"✅ {provider} 키 적용됨 (이 세션 동안 유지)")
-            else:
-                st.session_state["llm_api_key"] = ""
-
-            st.caption(
-                "💡 영구 저장하려면 `.streamlit/secrets.toml`에 "
-                "`LLM_API_KEY`와 `LLM_PROVIDER`를 설정하세요."
-            )
+                k = st.text_input("API Key", type="password", key="s_key")
+            if k:
+                st.session_state["llm_api_key"] = k
+                st.session_state["llm_provider"] = prov
+                st.success(f"✅ {prov} 키 적용됨")
+            st.caption("영구 저장: Streamlit Cloud Settings → Secrets")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 10. 메인
+# 9. 메인
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 def main():
     st.set_page_config(
-        page_title="Gourmet-OS",
-        page_icon="🧬",
-        layout="centered",       # ← 모바일 최적: centered
-        initial_sidebar_state="collapsed",
+        page_title="Gourmet-OS", page_icon="🧬",
+        layout="centered", initial_sidebar_state="collapsed",
     )
-    st.markdown(MOBILE_CSS, unsafe_allow_html=True)
+    st.markdown(CSS, unsafe_allow_html=True)
 
     # 헤더
     st.markdown(
-        '<div class="app-header">'
-        '<h1>Gourmet-OS</h1>'
-        '<p>미식 대사 관리 관제탑</p>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+        '<div class="hd"><h1>Gourmet-OS</h1><p>냉장고 → 메뉴 결정 → 조리</p></div>',
+        unsafe_allow_html=True)
 
-    # ── 설정 (API 키) ──
-    _render_settings()
-
-    # ── CSV URL 확보 ──
+    # CSV
     csv_url = SHEET_CSV_URL
     if not csv_url:
-        csv_url = st.text_input(
-            "구글 시트 CSV URL",
-            placeholder="https://docs.google.com/spreadsheets/d/e/…/pub?output=csv",
-        )
+        csv_url = st.text_input("CSV URL", placeholder="구글 시트 CSV 배포 URL")
         if not csv_url:
-            st.markdown(
-                '<div class="empty-state">'
-                '<div class="icon">📋</div>'
-                '<p>CSV URL을 입력하세요.</p>'
-                '</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown('<div class="empty"><div class="ico">📋</div><p>CSV URL을 입력하세요.</p></div>',
+                        unsafe_allow_html=True)
             st.stop()
 
-    # ── 데이터 로드 ──
     with st.spinner("불러오는 중…"):
         df_full = load_data(csv_url)
 
-    # ── 필터 (메인 상단) ──
-    fparams = render_filters(df_full)
+    # ── 핵심 입력: 냉장고 재료 ──
+    fridge = render_fridge_input()
 
-    # ── 필터링 (AND 결합) ──
+    # ── 보조 필터 ──
+    filters = render_sub_filters(df_full)
+
+    # ── 활성 필터 칩 ──
+    render_active_chips(fridge, filters)
+
+    # ── 필터링 ──
     filtered = apply_filters(
         df_full,
-        max_minutes=fparams["max_minutes"],
-        ingredient=fparams["ingredient"],
-        health_goal=fparams["health"],
-        categories=fparams["categories"],
-        sort_by=fparams["sort_by"],
+        fridge=fridge,
+        max_minutes=filters["max_minutes"],
+        categories=filters["categories"],
+        health_goal=filters["health"],
+        sort_by=filters["sort_by"],
     )
 
-    # ── 카드 리스트 (1열) ──
-    render_card_list(filtered, df_full)
+    # 냉장고 매칭 시 매칭 수 기준 정렬 (기본 정렬일 때)
+    if fridge and filters["sort_by"] == "기본":
+        filtered = filtered.copy()
+        filtered["_매칭수"] = filtered["_핵심재료_정규"].apply(
+            lambda x: count_matches(x, fridge)
+        )
+        filtered = filtered.sort_values("_매칭수", ascending=False)
+
+    # ── 카드 리스트 ──
+    render_cards(filtered, df_full, fridge)
+
+    # ── 설정 (최하단) ──
+    st.markdown("---")
+    render_settings()
 
 
 if __name__ == "__main__":
